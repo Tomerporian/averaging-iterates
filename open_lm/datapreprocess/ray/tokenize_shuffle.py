@@ -198,10 +198,10 @@ def preprocess(
             tokens = tokenizer_fn(string)
             tokens.append(EOT)
             while len(tokens) > 0:
-                # Add tokens to the buffer while controlling buffer, speeds up slicing for large documents 
+                # Add tokens to the buffer while controlling buffer, speeds up slicing for large documents
                 print(f"Tokens left: {len(tokens)}")
-                idx = min(seqlen*max_buffer_seqs-len(buffer), len(tokens))
-                buffer += tokens[:idx] 
+                idx = min(seqlen * max_buffer_seqs - len(buffer), len(tokens))
+                buffer += tokens[:idx]
                 tokens = tokens[idx:]
 
                 while len(buffer) >= seqlen:
