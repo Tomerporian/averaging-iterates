@@ -1,0 +1,42 @@
+job_details:
+  name: long_runs_const_1_nodes_tuning
+  output_dir: exps
+  num_gpus: 4
+  num_nodes: 1
+parameters:
+    model: ['layers=3_hidden-dim=96', 'layers=5_hidden-dim=160', 'layers=8_hidden-dim=288']
+    train_num_samples: [426766791] # ~426M
+    warmup: [20838]
+    dataset_resampled: [false]
+    precision: ['amp_bfloat16']
+    batch_size: [16]
+    grad_checkpointing: [true]
+    log_every_n_steps: [20]
+    csv_log: [true]
+    grad_clip_norm: [1]
+    warmup: [2000]
+    beta1: [0.9]
+    beta2: [0.95]
+    eps: [1.0e-08]
+    report_to: ['wandb']
+    resume: ['latest']
+    data_key: ['json']
+    lr_cooldown_end: [3.0e-05]
+    qk_norm: [true]
+    z_loss_coefficient: [0.0001]
+    lr_scheduler: ['const']
+    wd: [0.033]
+    lr: [3.0e-03, 1.5e-03, 7.5e-04, 3.0e-4]
+    epochs: [64]
+    wandb_project_name: ['lm_grid_160m_more_avgs']
+    log_avg_model_training_loss: [20]
+    delete_previous_checkpoint: [true]
+    # keep_powers_of_two: [5]
+    workers: [2]
+    LIST_AVGS_ACC_FREQ:
+      - accum_freq: [1]
+        averagers: ['poly_64_1']
+      - accum_freq: [2]
+        averagers: ['poly_32_1,poly_64_1,poly_96_1']
+      - accum_freq: [4]
+        averagers: ['poly_32_1,poly_64_1,poly_96_1']

@@ -1,0 +1,42 @@
+job_details:
+  name: lm_grid_25m_more_avgs_3
+  output_dir: exps
+
+parameters:
+    train_num_samples: [400000000] # per epoch - 400M
+    workers: [2]
+    # train_data: ['"/p/fastdata/mmlaion/lmdata/rpj/shard_{00000004..00099999}.tar"'] This is in the .sh file instead
+    dataset_resampled: [true]
+    precision: ['amp_bfloat16']
+    batch_size: [16]
+    grad_checkpointing: [true]
+    log_every_n_steps: [20]
+    csv_log: [true]
+    grad_clip_norm: [1]
+    warmup: [2000]
+    model: ['open_lm_25m']
+    beta1: [0.9]
+    beta2: [0.95]
+    eps: [1.0e-08]
+    report_to: ['wandb']
+    resume: ['latest']
+    data_key: ['json']
+    lr_cooldown_end: [3.0e-05]
+    qk_norm: [true]
+    z_loss_coefficient: [0.0]
+    accum_freq: [1]
+     # to be filled in
+    LIST_SCHEDS:
+      # - lr_scheduler: ['cosine']
+      #   wd: [0.1]
+      #   lr: [3.0e-3]
+      #   epochs: [8, 16, 32, 64]
+      - lr_scheduler: ['const']
+        # wd: [0.001, 0.003, 0.01, 0.03, 0.1]
+        # lr: [3.0e-4, 6.0e-4, 1.0e-3]
+        wd: [0.01]
+        lr: [6.0e-4]
+        epochs: [64]
+    wandb_project_name: ['lm_grid_25m_more_avgs']
+    log_avg_model_training_loss: [20]
+    averagers: ['poly_64_1,poly_64_100']

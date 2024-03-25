@@ -266,9 +266,17 @@ def save_checkpoint(
                 )
 
         if args.delete_previous_checkpoint:
+            keeping_flag = False
+            if args.keep_powers_of_two > 0:
+                to_keep = completed_epoch - 1
+                if to_keep == 0:
+                    keeping_flag = False
+                elif np.log2(to_keep)==int(np.log2(to_keep)) and to_keep * 2**args.keep_powers_of_two > args.epochs:
+                    # don't delete the checkpoint in that case, but do delete the optimizer
+                    keeping_flag = True
             for prefix in prefixes:
                 prev = os.path.join(args.checkpoint_path, f"{prefix}{completed_epoch - 1}.pt")
-                if os.path.exists(prev):
+                if os.path.exists(prev) and not keeping_flag:
                     os.remove(prev)
 
 
@@ -693,9 +701,12 @@ def main(args):
     # determine if this worker should save logs and checkpoints. only do so if it is rank == 0
     args.save_logs = args.logs and args.logs.lower() != "none" and is_master(args)
     writer = None
+    csv_path = None
     if args.save_logs and args.tensorboard:
         assert tensorboard is not None, "Please install tensorboard."
         writer = tensorboard.SummaryWriter(args.tensorboard_path)
+    if args.save_logs and args.csv_log:
+        csv_path = os.path.join(args.logs, args.name, "summary.csv")
     if args.wandb and is_master(args):
         assert wandb is not None, "Please install wandb."
         logging.debug("Starting wandb.")
@@ -805,6 +816,7 @@ def main(args):
             total_steps=total_steps,
             args=args,
             tb_writer=writer,
+            csv_path=csv_path,
         )
 
         if args.distributed:
@@ -854,6 +866,8 @@ def main(args):
         if done_training:
             if is_master(args):
                 logging.info("Model has seen the desired number of tokens. Ending training.")
+                with open(os.path.join(args.logs, args.name, "done"), "w") as f:
+                    f.write("done")
             break
 
     if args.wandb and is_master(args):

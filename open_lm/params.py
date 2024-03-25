@@ -761,6 +761,12 @@ def parse_args(args):
         default=0,
         help="Whether to log the average model training loss. if not 0, it will log the average loss over the specified number of steps.",
     )
+    parser.add_argument("--csv-log",
+        action="store_true",
+        default=False,
+        help="Whether to log to a csv file."
+    )
+    parser.add_argument("--keep-powers-of-two", type=int, default=0, help="With delete previous checkpoints, keep only checkpoints that are powers of 2.")
     add_model_args(parser)
 
     config = maybe_load_config(parser, args)

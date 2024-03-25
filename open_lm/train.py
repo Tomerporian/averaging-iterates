@@ -3,7 +3,9 @@ import logging
 import math
 import time
 from contextlib import nullcontext
-
+from os.path import exists
+from csv import DictWriter
+from collections import OrderedDict
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -42,7 +44,7 @@ def backward(total_loss, scaler):
 
 
 def train_one_epoch(
-    model, data, loss, epoch, step, optimizer, scaler, scheduler, total_steps, args, tb_writer=None, averagers=None
+    model, data, loss, epoch, step, optimizer, scaler, scheduler, total_steps, args, tb_writer=None, averagers=None, csv_path=None
 ):
     """Trains model for one epoch on the provided data.
 
@@ -313,6 +315,18 @@ def train_one_epoch(
                     if args.wandb:
                         assert wandb is not None, "Please install wandb."
                         wandb.log({name: val, "step": step, "tokens": log_data["tokens"]})
+                    if csv_path is not None:
+                        # if the file does not exist, (which is the case for the first iteration) we need to write the header
+                        rowd = OrderedDict(epoch=epoch, step=step)
+                        rowd.update([("train/" + k, v) for k, v in log_data.items()])
+                        if not exists(csv_path):
+                            with open(csv_path, "w") as f:
+                                dict_writer = DictWriter(f, fieldnames=rowd.keys())
+                                dict_writer.writeheader()
+                        # delete all rows with epoch <= current epoch
+                        with open(csv_path, "a") as f:
+                            dict_writer = DictWriter(f, fieldnames=rowd.keys())
+                            dict_writer.writerow(rowd)
 
                 # resetting batch / data time meters per log window
                 batch_time_m.reset()
