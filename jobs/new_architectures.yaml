@@ -22,7 +22,7 @@ parameters:
       accum_freq: [1]
     dataset_resampled: [false]
     precision: ['amp_bfloat16']
-    batch_size: [16]
+    global_batch_size: [256]
     grad_checkpointing: [true]
     log_every_n_steps: [20]
     csv_log: [true]
