@@ -240,7 +240,7 @@ def check_args(args):
             if args.remote_sync_protocol != "s3":
                 raise ValueError("Sync protocol not supported when using resume latest.")
 
-    if args.lr_scheduler not in ["cosine", "const", "const-cooldown"]:
+    if args.lr_scheduler not in ["cosine", "const", "const-cooldown", "hybrid", "cosine-rewarmed", "hybrid-cooldown"]:
         raise ValueError(
             f"Unknown scheduler, {args.lr_scheduler}. Available options are: cosine, const, const-cooldown."
         )

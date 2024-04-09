@@ -200,7 +200,7 @@ def train_one_epoch(
                                         # out_avg, _ = averager.av_model(inputs_ii).item()
                                         out_avg, _, _ = averager.av_model(inputs_ii)
                                         local_avg_losses[key] = (
-                                            loss(out_avg.reshape(-1, args.vocab_size), targets.reshape(-1))
+                                            loss(out_avg.reshape(-1, args.vocab_size), targets_ii.reshape(-1))
                                             * inputs_ii.shape[0]
                                             / inputs.shape[0]
                                         )
