@@ -51,7 +51,7 @@ from open_lm.data import get_data, get_wds_dataset
 from open_lm.distributed import is_master, init_distributed_device, broadcast_object
 from open_lm.logger import setup_logging
 from open_lm.params import parse_args
-from open_lm.scheduler import cosine_lr, const_lr
+from open_lm.scheduler import cosine_lr, const_lr, const_lr_cooldown, hybrid_cosine_rsqrt_cooldown, cosine_rewarmed_lr, hybrid_cosine_rsqrt
 from open_lm.train import train_one_epoch
 from open_lm.evaluate import evaluate_loop
 from open_lm.file_utils import (
@@ -64,6 +64,8 @@ from open_lm.file_utils import (
     terminate_sync_process,
 )
 
+import schedulefree
+# from csv import DictWriter
 
 LATEST_CHECKPOINT_NAME = "epoch_latest.pt"
 
@@ -249,7 +251,7 @@ def save_checkpoint(
 
         if averagers is not None:
             for k in averagers.avgs_dict:
-                prefixes[f"{k}_"] = averagers.avgs_dict[k].get_state_dict_avg(args.fsdp)
+                prefixes[f"{k}_"] = averagers.avgs_dict[k].get_state_dict_avg()
         if (
             completed_epoch == args.epochs
             or is_final_checkpoint
@@ -265,13 +267,17 @@ def save_checkpoint(
 
         if args.delete_previous_checkpoint:
             keeping_flag = False
+            to_keep = completed_epoch - 1
             if args.keep_powers_of_two > 0:
-                to_keep = completed_epoch - 1
                 if to_keep == 0:
                     keeping_flag = False
                 elif np.log2(to_keep)==int(np.log2(to_keep)) and to_keep * 2**args.keep_powers_of_two > args.epochs:
                     # don't delete the checkpoint in that case, but do delete the optimizer
                     keeping_flag = True
+            if args.keep_freq != 0 and to_keep % args.keep_freq == 0:
+                keeping_flag = False
+            if args.keep_from != 0 and to_keep < args.keep_from:
+                keeping_flag = True
             for prefix in prefixes:
                 prev = os.path.join(args.checkpoint_path, f"{prefix}{completed_epoch - 1}.pt")
                 if os.path.exists(prev) and (not keeping_flag or prefix == "optimizer_"):
@@ -561,7 +567,7 @@ def main(args):
                 ddp_args["static_graph"] = True
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
 
-    if not args.fsdp:
+    if args.averagers is not None and args.averagers != 'none' and not args.fsdp:
         averagers = ModelAverager(model, args.averagers) if args.averagers is not None else None
         # we can deep copy the model now, and since it's already wrapped, the averagers will be copied wrapped as well
 
@@ -638,20 +644,35 @@ def main(args):
         named_parameters = list(model.named_parameters())
         no_decay_params = []  # to be potentially used later
         params = [p for n, p in named_parameters if p.requires_grad]
-
-        optimizer = optim.AdamW(
-            [
-                {"params": no_decay_params, "weight_decay": 0.0},
-                {"params": params, "weight_decay": args.wd},
-            ],
-            lr=args.lr,
-            betas=(args.beta1, args.beta2),
-            eps=args.eps,
-        )
-        scaler = None
-        if args.precision == "amp":
-            assert not args.fsdp, "FSDP not supported with amp, only amp_bfloat16"
-            scaler = GradScaler()
+        if args.schedulefree:
+            optimizer = schedulefree.AdamWScheduleFree(
+                [
+                    {"params": no_decay_params, "weight_decay": 0.0},
+                    {"params": params, "weight_decay": args.wd},
+                ],
+                lr=args.lr,
+                betas=(args.beta1, args.beta2),
+                eps=args.eps,
+                warmup_steps=args.warmup,
+            )
+            scaler = None
+            if args.precision == "amp":
+                assert not args.fsdp, "FSDP not supported with amp, only amp_bfloat16"
+                scaler = GradScaler()
+        else:
+            optimizer = optim.AdamW(
+                [
+                    {"params": no_decay_params, "weight_decay": 0.0},
+                    {"params": params, "weight_decay": args.wd},
+                ],
+                lr=args.lr,
+                betas=(args.beta1, args.beta2),
+                eps=args.eps,
+            )
+            scaler = None
+            if args.precision == "amp":
+                assert not args.fsdp, "FSDP not supported with amp, only amp_bfloat16"
+                scaler = GradScaler()
 
     # optionally resume optimizer from a checkpoint
     if args.resume is not None:
@@ -691,8 +712,10 @@ def main(args):
             total_steps = (args.train_num_samples * args.epochs) // args.global_batch_size
         else:
             total_steps = (data["train"].dataloader.num_batches) * args.epochs
-
-        if args.lr_scheduler == "cosine":
+            cooldown_steps = (data["train"].dataloader.num_batches) * args.epochs_cooldown if args.epochs_cooldown is not None else None
+        if args.schedulefree: # schedulefree, so no scheduler
+            pass
+        elif args.lr_scheduler == "cosine":
             scheduler = cosine_lr(
                 optimizer,
                 args.lr,
@@ -701,17 +724,53 @@ def main(args):
                 args.lr_cooldown_end,
                 args.force_min_lr,
             )
+        elif args.lr_scheduler == "hybrid":
+            scheduler = hybrid_cosine_rsqrt(
+                optimizer,
+                args.lr,
+                args.warmup,
+                total_steps,
+                args.force_min_lr,
+            )
+        elif args.lr_scheduler == "cosine-rewarmed":
+            scheduler = cosine_rewarmed_lr(
+                optimizer,
+                args.lr,
+                args.warmup,
+                total_steps,
+                args.lr_cooldown_end,
+                args.force_min_lr,
+                args.cosine_rewarmed_target_steps,
+                args.cosine_rewarmed_original_warmup,
+            )
+        elif args.lr_scheduler == "hybrid-cooldown":
+            scheduler = hybrid_cosine_rsqrt_cooldown(
+                optimizer,
+                args.lr,
+                args.warmup,
+                total_steps,
+                args.force_min_lr,
+                cooldown_steps,
+            )
         elif args.lr_scheduler == "const":
             scheduler = const_lr(
                 optimizer,
                 args.lr,
                 args.warmup,
                 # total_steps,
-                # args.lr_cooldown_end,
-                # args.force_min_lr,
+                # cooldown_steps,
+            )
+        elif args.lr_scheduler == "const-cooldown":
+            # optimizer, base_lr, warmup_length, steps, cooldown_steps, cooldown_power=1.0, cooldown_end_lr=0.
+            scheduler = const_lr_cooldown(
+                optimizer,
+                args.lr,
+                args.warmup,
+                total_steps,
+                cooldown_steps,
             )
         else:
-            logging.error(f"Unknown scheduler, {args.lr_scheduler}. Available options are: cosine, const.")
+            logging.error(f"Unknown scheduler, {args.lr_scheduler}. Available options are: cosine, const, hybrid, cosine-rewarmed, hybrid-cooldown, const-cooldown")
             exit(1)
 
     # determine if this worker should save logs and checkpoints. only do so if it is rank == 0
@@ -758,6 +817,17 @@ def main(args):
         if is_master(args):
             with fsspec.open(os.path.join(checkpoint_root, "results.jsonl"), "a") as f:
                 f.write(f"{json.dumps(metrics)}\n")
+            # also write to a csv file called summary_val.csv
+            # if the file does not exist, write the header. else, append to the file
+            # if os.path.exists(os.path.join(checkpoint_root, "summary_val.csv")):
+            #     write_header = False
+            # else:
+            #     write_header = True
+            # with open(os.path.join(checkpoint_root, "summary_val.csv"), "a") as f:
+            #     writer = DictWriter(f, fieldnames=metrics.keys())
+            #     if write_header:
+            #         writer.writeheader()
+            #     writer.writerow(metrics)
 
         cleanup(remote_sync_process, args.distributed)
         return
@@ -852,10 +922,19 @@ def main(args):
             # validate based on frequency and always validate the last checkpoint
             try:
                 evaluation_metrics = evaluate_loop(model, data["val_list"], epoch, args, writer)
-
+                evaluation_metrics["average"] = "none"
                 if is_master(args):
                     with fsspec.open(os.path.join(args.checkpoint_path, "results.jsonl"), "a") as f:
                         f.write(f"{json.dumps(evaluation_metrics)}\n")
+                if averagers is not None:
+                    for k in averagers.avgs_dict.keys():
+                        logging.info(f"=> evaluation avg {k}")
+                        av_model_to_val = averagers.avgs_dict[k].av_model
+                        evaluation_metrics = evaluate_loop(av_model_to_val, data["val_list"], epoch, args, writer)
+                        evaluation_metrics["average"] = k
+                        if is_master(args):
+                            with fsspec.open(os.path.join(args.checkpoint_path, "results.jsonl"), "a") as f:
+                                f.write(f"{json.dumps(evaluation_metrics)}\n")
 
             except Exception as e:
                 if is_master(args):
@@ -888,7 +967,9 @@ def main(args):
 
     if args.wandb and is_master(args):
         wandb.finish()
-
+    if args.save_logs:
+        with open(os.path.join(args.logs, args.name, "done"), "w") as f:
+            f.write("done")
     # run a final sync.
     if remote_sync_process is not None:
         logging.info("Final remote sync.")

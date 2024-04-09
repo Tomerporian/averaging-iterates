@@ -192,10 +192,12 @@ def check_args(args):
         assert args.train_data is None, "--train-data must not be specified if --dataset-type='synthetic'"
         assert args.dataset_manifest is None, "--dataset-manifest must not be specified if --dataset-type='synthetic'"
 
+    if args.global_batch_size is not None and args.batch_size is not None:
+        args.global_batch_size = args.batch_size * args.world_size
+
     if args.val_data is not None and args.global_val_batch_size is None:
         # Make sure that val batch size is set to micro batch size
         args.global_val_batch_size = args.global_batch_size // args.accum_freq
-
     # custom_attn checks
     if args.attn_name == "custom_attn":
         assert (
@@ -414,6 +416,9 @@ def parse_args(args):
         help="Force the LR to stop decaying at this value.",
     )
     parser.add_argument("--save-frequency", type=int, default=1, help="How often to save checkpoints.")
+    parser.add_argument("--keep-powers-of-two", type=int, default=0, help="With delete previous checkpoints, keep only checkpoints that are powers of 2.")
+    parser.add_argument("--keep-freq", type=int, default=0, help="With delete previous checkpoints, keep only checkpoints that are multiples of this number.")
+    parser.add_argument("--keep-from", type=int, default=0, help="With delete previous checkpoints, keep only checkpoints that are greater than this number.")
     parser.add_argument(
         "--save-most-recent",
         action="store_true",
@@ -768,9 +773,24 @@ def parse_args(args):
         default=False,
         help="Whether to log to a csv file."
     )
-    parser.add_argument("--keep-powers-of-two", type=int, default=0, help="With delete previous checkpoints, keep only checkpoints that are powers of 2.")
-    add_model_args(parser)
-
+    parser.add_argument("--schedulefree",
+        action="store_true",
+        default=False,
+        help="Using schedule free optimizer.",
+    )
+    parser.add_argument("--cosine-rewarmed-target-steps",
+        type=int,
+        default=None,
+        help="for cosine rewarmed, the target steps for the cosine schedule. Default: cosine",
+    )
+    parser.add_argument("--cosine-rewarmed-original-warmup",
+        type=int,
+        default=1000,
+        help="for cosine rewarmed, the original warmup steps. Default: 1000",
+    )
+    parser.add_argument("--batch-size",
+         type=int, default=None, help="Batch size per GPU."
+    )
     # config = maybe_load_config(parser, args)
     # if config is not None:
     #     args = argparse.Namespace(**config)

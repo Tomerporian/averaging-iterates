@@ -63,7 +63,9 @@ def train_one_epoch(
     dataloader = data["train"].dataloader
     num_batches_per_epoch = dataloader.num_batches
     sample_digits = math.ceil(math.log(dataloader.num_samples + 1, 10))
-
+    if args.schedulefree:
+        losses_schedfree = 0
+        losses_schedfree_m = AverageMeter()
     losses_m = AverageMeter()
     load_balancing_losses_m = AverageMeter()
     batch_time_m = AverageMeter()
@@ -114,7 +116,7 @@ def train_one_epoch(
             dist.all_reduce(has_data, op=ReduceOp.SUM)
         if has_data < args.world_size:
             break
-
+        log_avg = lambda i, num_batches_per_epoch: args.log_avg_model_training_loss and (i % args.log_avg_model_training_loss == 0 or (i+1) == num_batches_per_epoch)
         (texts,) = batch
         texts = torch.LongTensor(texts).to(device)
         data_time_m.update(time.time() - end)
@@ -136,13 +138,24 @@ def train_one_epoch(
                     total_loss += total_load_balancing_loss
 
             backward(total_loss, scaler)
-            if averagers is not None and args.log_avg_model_training_loss and i % args.log_avg_model_training_loss == 0:
-                with autocast():
-                    for key, averager in averagers.avgs_dict.items():
+            if log_avg(i, num_batches_per_epoch):
+                if averagers is not None:
+                    with autocast():
+                        for key, averager in averagers.avgs_dict.items():
+                            with torch.no_grad():
+                                out_avg, _, _ = averager.av_model(inputs)
+                                # save the loss for the average model for logging
+                                total_loss_avg[key] = loss(out_avg.reshape(-1, args.vocab_size), targets.reshape(-1))
+                if args.schedulefree:
+                    model.eval()
+                    optimizer.eval()
+                    with autocast():
                         with torch.no_grad():
-                            out_avg, _, _ = averager.av_model(inputs)
-                            # save the loss for the average model for logging
-                            total_loss_avg[key] = loss(out_avg.reshape(-1, args.vocab_size), targets.reshape(-1))
+                            out_schedfree, _, _ = model(inputs)
+                            losses_schedfree = loss(out_schedfree.reshape(-1, args.vocab_size), targets.reshape(-1))
+                            losses_schedfree_m.update(losses_schedfree.item())
+                    model.train()
+                    optimizer.train()
         else:
             # split up batch into accum_freq chunks -- if you have --batch-size 8 and --accum-freq 4
             # then you only process 2 items at a time. batch-size must be divisible by accume-freq.
@@ -179,43 +192,47 @@ def train_one_epoch(
                         local_loss += local_load_balancing_loss
 
                     backward(local_loss, scaler)
-                    with autocast():
-                        if (
-                            averagers is not None
-                            and args.log_avg_model_training_loss
-                            and i % args.log_avg_model_training_loss == 0
-                        ):
-                            for key, averager in averagers.avgs_dict.items():
+                    if log_avg(i, num_batches_per_epoch):
+                        with autocast():
+                            if averagers is not None:
+                                for key, averager in averagers.avgs_dict.items():
+                                    with torch.no_grad():
+                                        # out_avg, _ = averager.av_model(inputs_ii).item()
+                                        out_avg, _, _ = averager.av_model(inputs_ii)
+                                        local_avg_losses[key] = (
+                                            loss(out_avg.reshape(-1, args.vocab_size), targets.reshape(-1))
+                                            * inputs_ii.shape[0]
+                                            / inputs.shape[0]
+                                        )
+                            if args.schedulefree:
+                                model.eval()
+                                optimizer.eval()
                                 with torch.no_grad():
-                                    # out_avg, _ = averager.av_model(inputs_ii).item()
-                                    out_avg, _, _ = averager.av_model(inputs_ii)
-                                    local_avg_losses[key] = (
-                                        loss(out_avg.reshape(-1, args.vocab_size), targets.reshape(-1))
-                                        * inputs_ii.shape[0]
-                                        / inputs.shape[0]
-                                    )
+                                    out_schedfree, _, _ = model(inputs_ii)
+                                    local_losses_schedfree = loss(out_schedfree.reshape(-1, args.vocab_size), targets_ii.reshape(-1))
+                                model.train()
+                                optimizer.train()
+
                 if ii == 0:
                     total_lm_loss = local_lm_loss
                     if args.moe_freq > 0:
                         total_load_balancing_loss = local_load_balancing_loss
-                    if (
-                        averagers is not None
-                        and args.log_avg_model_training_loss
-                        and i % args.log_avg_model_training_loss == 0
-                    ):
-                        for key, averager in averagers.avgs_dict.items():
-                            total_loss_avg[key] = local_avg_losses[key]
+                    if log_avg(i, num_batches_per_epoch):
+                        if averagers is not None:
+                            for key, averager in averagers.avgs_dict.items():
+                                total_loss_avg[key] = local_avg_losses[key]
+                        if args.schedulefree:
+                            losses_schedfree = local_losses_schedfree
                 else:
                     total_lm_loss += local_lm_loss
                     if args.moe_freq > 0:
                         total_load_balancing_loss += local_load_balancing_loss
-                    if (
-                        averagers is not None
-                        and args.log_avg_model_training_loss
-                        and i % args.log_avg_model_training_loss == 0
-                    ):
-                        for key, averager in averagers.avgs_dict.items():
-                            total_loss_avg[key] += local_avg_losses[key]
+                    if log_avg(i, num_batches_per_epoch):
+                        if averagers is not None:
+                            for key, averager in averagers.avgs_dict.items():
+                                total_loss_avg[key] += local_avg_losses[key]
+                        if args.schedulefree:
+                            losses_schedfree += local_losses_schedfree
 
             total_loss = total_lm_loss
             if args.moe_freq > 0:
@@ -241,15 +258,20 @@ def train_one_epoch(
         end = time.time()
 
         global_loss_tensor = total_loss.detach().clone()
-        if averagers is not None and args.log_avg_model_training_loss and i % args.log_avg_model_training_loss == 0:
-            # same for the average model loss
-            for key, value in total_loss_avg.items():
-                total_loss_avg[key] = value.detach().clone()
+        if log_avg(i, num_batches_per_epoch):
+            if args.schedulefree:
+                losses_schedfree = losses_schedfree.detach().clone()
+            if averagers is not None:
+                for key, value in total_loss_avg.items():
+                    total_loss_avg[key] = value.detach().clone()
         if args.world_size > 1:
             dist.all_reduce(global_loss_tensor, op=ReduceOp.AVG)
-            if averagers is not None and args.log_avg_model_training_loss and i % args.log_avg_model_training_loss == 0:
-                for key, value in total_loss_avg.items():
-                    dist.all_reduce(value, op=ReduceOp.AVG)
+            if log_avg(i, num_batches_per_epoch):
+                if args.schedulefree:
+                    dist.all_reduce(losses_schedfree, op=ReduceOp.AVG)
+                if averagers is not None:
+                    for key, value in total_loss_avg.items():
+                        dist.all_reduce(value, op=ReduceOp.AVG)
 
         batch_count = i + 1
         step += 1
@@ -258,9 +280,12 @@ def train_one_epoch(
             # update the loss meter with the global loss tensor every iteration, so that the logging is of the avg of loss of the last
             # args.log_every_n_steps iterations
             losses_m.update(global_loss_tensor.item(), batch_size)
-            if averagers is not None and args.log_avg_model_training_loss and i % args.log_avg_model_training_loss == 0:
-                for key, value in total_loss_avg.items():
-                    losses_avg_m[key].update(value.item(), batch_size)
+            if log_avg(i, num_batches_per_epoch):
+                if args.schedulefree:
+                    losses_schedfree_m.update(losses_schedfree.item(), batch_size)
+                if averagers is not None:
+                    for key, value in total_loss_avg.items():
+                        losses_avg_m[key].update(value.item(), batch_size)
             if i % args.log_every_n_steps == 0 or batch_count == num_batches_per_epoch or step == total_steps - 1:
                 num_samples = batch_count * batch_size * args.world_size
                 samples_per_epoch = dataloader.num_samples
@@ -299,13 +324,11 @@ def train_one_epoch(
                     "tokens": (step + 1) * args.global_batch_size * args.seq_len,
                 }
 
-                if averagers is not None and args.log_avg_model_training_loss:
-                    for k in averagers.avgs_dict:
-                        if (
-                            averagers is not None
-                            and args.log_avg_model_training_loss
-                            and (i % args.log_avg_model_training_loss == 0 or batch_count == num_batches_per_epoch)
-                        ):
+                if log_avg(i, num_batches_per_epoch):
+                    if args.schedulefree:
+                        log_data["schedfree_loss"] = losses_schedfree_m.avg
+                    if averagers is not None:
+                        for k, _ in losses_avg_m.items():
                             log_data[k + "_loss"] = losses_avg_m[k].avg
                 if args.log_logit_mean:
                     log_data["logit_mean"] = logit_m.val
@@ -338,7 +361,8 @@ def train_one_epoch(
                 if averagers is not None:
                     for k in averagers.avgs_dict:
                         losses_avg_m[k].reset()
-
+                if args.schedulefree:
+                    losses_schedfree_m.reset()
                 if math.isnan(losses_m.val):
                     # case where loss goes to nan, we see this sometimes with bad nodes.
                     # in this case we would like to free resources and prevent other issues
