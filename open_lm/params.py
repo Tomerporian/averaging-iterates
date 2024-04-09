@@ -792,6 +792,7 @@ def parse_args(args):
     parser.add_argument("--batch-size",
          type=int, default=None, help="Batch size per GPU."
     )
+    add_model_args(parser)
     # config = maybe_load_config(parser, args)
     # if config is not None:
     #     args = argparse.Namespace(**config)
