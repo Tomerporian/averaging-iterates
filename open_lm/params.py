@@ -192,8 +192,9 @@ def check_args(args):
         assert args.train_data is None, "--train-data must not be specified if --dataset-type='synthetic'"
         assert args.dataset_manifest is None, "--dataset-manifest must not be specified if --dataset-type='synthetic'"
 
-    if args.global_batch_size is not None and args.batch_size is not None:
-        args.global_batch_size = args.batch_size * args.world_size
+    # TODO: make an option to run with batch size per device
+    # if args.global_batch_size is not None and args.batch_size is not None:
+    #     args.global_batch_size = args.batch_size * args.world_size
 
     if args.val_data is not None and args.global_val_batch_size is None:
         # Make sure that val batch size is set to micro batch size
