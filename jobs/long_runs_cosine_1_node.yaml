@@ -1,12 +1,12 @@
 job_details:
-  name: long_runs_cosine_1_nodes
+  name: long_runs_cosine_1_nodes_warmup
   output_dir: exps
   num_gpus: 4
   num_nodes: 1
 parameters:
     model: ['layers=3_hidden-dim=96', 'layers=5_hidden-dim=160', 'layers=8_hidden-dim=288']
     train_num_samples: [426766791] # ~426M
-    warmup: [20838]
+    warmup: [100,200,500,1000]
     accum_freq: [1]
     dataset_resampled: [false]
     precision: ['amp_bfloat16']
@@ -15,7 +15,6 @@ parameters:
     log_every_n_steps: [20]
     csv_log: [true]
     grad_clip_norm: [1]
-    warmup: [2000]
     beta1: [0.9]
     beta2: [0.95]
     eps: [1.0e-08]

@@ -1,0 +1,37 @@
+job_details:
+  name: cosine_warmup_v2
+  output_dir: exps
+parameters:
+    model: ['layers=14_hidden-dim=576']
+    accum_freq: [2]
+    train_num_samples: [100000000] # ~100M, so *100 = 10B tokens
+    lr_scheduler: ['cosine-rewarmed']
+    warmup: [250]
+    cosine_rewarmed_original_warmup: [1000]
+    cosine_rewarmed_target_steps: [152594] # manually calculated, 40B tokens
+    dataset_resampled: [false]
+    precision: ['amp_bfloat16']
+    batch_size: [16]
+    grad_checkpointing: [true]
+    log_every_n_steps: [20]
+    csv_log: [true]
+    grad_clip_norm: [1]
+    pretrained: ['exps/24-04-03-sidekick_runs_debug/014_24-04-03-sidekick_runs_debug+lr=0.003+tra_num_sam=300000000+lr_sch=cosine/checkpoints/epoch_100.pt']
+    beta1: [0.9]
+    beta2: [0.95]
+    eps: [1.0e-08]
+    report_to: ['wandb']
+    resume: ['latest']
+    data_key: ['json']
+    lr_cooldown_end: [0.0]
+    qk_norm: [true]
+    z_loss_coefficient: [0.0001]
+    wd: [0.033]
+    lr: [0.003] # same as cosine for 40B, scheduler knows how to handle it
+    epochs: [100]
+    wandb_project_name: ['lm_grid_160m_more_avgs']
+    log_avg_model_training_loss: [20]
+    delete_previous_checkpoint: [true]
+    keep_freq: [5]
+    keep_from: [75]
+    workers: [2]

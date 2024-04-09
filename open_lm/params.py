@@ -237,7 +237,7 @@ def check_args(args):
             if args.remote_sync_protocol != "s3":
                 raise ValueError("Sync protocol not supported when using resume latest.")
 
-    if args.lr_scheduler != "cosine" or args.lr_scheduler != "const" or args.lr_scheduler != "const-cooldown":
+    if args.lr_scheduler not in ["cosine", "const", "const-cooldown"]:
         raise ValueError(
             f"Unknown scheduler, {args.lr_scheduler}. Available options are: cosine, const, const-cooldown."
         )
@@ -248,6 +248,8 @@ def check_args(args):
 
 def parse_args(args):
     parser = argparse.ArgumentParser()
+    parser.add_argument('-c', '--config', default='', type=str, metavar='FILE',
+                    help='YAML config file specifying default arguments')
     parser.add_argument(
         "--train-data",
         type=str,
@@ -769,13 +771,19 @@ def parse_args(args):
     parser.add_argument("--keep-powers-of-two", type=int, default=0, help="With delete previous checkpoints, keep only checkpoints that are powers of 2.")
     add_model_args(parser)
 
-    config = maybe_load_config(parser, args)
-    if config is not None:
-        args = argparse.Namespace(**config)
-        logging.info(f"Loaded config from file: {args=}")
-    else:
-        args = parser.parse_args(args)
-
+    # config = maybe_load_config(parser, args)
+    # if config is not None:
+    #     args = argparse.Namespace(**config)
+    #     logging.info(f"Loaded config from file: {args=}")
+    # else:
+    #     args = parser.parse_args(args)
+    args = parser.parse_args()
+    if args.config:
+        with open(args.config, 'r') as f:
+            cfg = yaml.safe_load(f)
+            # Override argparse defaults with config file
+            for key, value in cfg.items():
+                setattr(args, key, value)
     check_args(args)
 
     return args

@@ -1,9 +1,9 @@
 job_details:
-  name: time_measurement
+  name: space_time_measurement_avg
   output_dir: exps
 parameters:
-    model: ['layers=33_hidden-dim=1792', 'layers=26_hidden-dim=1312']
-    train_num_samples: [42676617] # ~42M
+    model: ['layers=18_hidden-dim=704', 'layers=23_hidden-dim=1024','layers=26_hidden-dim=1312'] 
+    train_num_samples: [4267660] # ~42M
     warmup: [20]
     dataset_resampled: [false]
     precision: ['amp_bfloat16']
@@ -25,10 +25,14 @@ parameters:
     lr_scheduler: ['const']
     wd: [0.033]
     lr: [3.0e-03]
-    epochs: [1]
+    epochs: [10]
     wandb_project_name: ['lm_grid_160m_more_avgs']
     log_avg_model_training_loss: [20]
-    delete_previous_checkpoint: [true]
+    # delete_previous_checkpoint: [true]
     # keep_powers_of_two: [5]
     workers: [2]
-    accum_freq: [2,4,8,16]
+    accum_freq: [1,2,4]
+    averagers: ['poly_64']
+    # fsdp: [true]
+    # fsdp_amp: [true]
+    # fsdp_limit_all_gather: [true]

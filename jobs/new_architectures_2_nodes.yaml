@@ -1,25 +1,22 @@
 job_details:
-  name: chinchilla_4_nodes_warmup_200
+  name: chinchilla_2_nodes_warmup_200
   output_dir: exps
   num_gpus: 4
-  num_nodes: 4
+  num_nodes: 2
 parameters:
     LIST_OF_EPOCHS:
-    - train_num_samples: [87119132] # ~87M
-      model: ['layers=26_hidden-dim=1312']
-      accum_freq: [4]
-    - train_num_samples: [174238264] # ~174M
-      model: ['layers=26_hidden-dim=1312']
-      accum_freq: [4]
-    - train_num_samples: [213383395] # ~213M
+    - LIST_WARMUP_STEPS:
+      - train_num_samples: [106691697] # ~107M
+      - train_num_samples: [53345848] # ~53M
       model: ['layers=23_hidden-dim=1024']
       accum_freq: [2]
-    - train_num_samples: [426766791] # ~426M
-      model: ['layers=23_hidden-dim=1024']
-      accum_freq: [2]
-    - train_num_samples: [184180508] # ~184M
+    - LIST_WARMUP_STEPS:
+      - train_num_samples: [92090254] # ~92M
+      - train_num_samples: [46045127] # ~46M
+      - train_num_samples: [23022563] # ~23M
       model: ['layers=18_hidden-dim=704']
       accum_freq: [1]
+    warmup: [200]
     dataset_resampled: [false]
     precision: ['amp_bfloat16']
     batch_size: [16]
@@ -27,7 +24,7 @@ parameters:
     log_every_n_steps: [20]
     csv_log: [true]
     grad_clip_norm: [1]
-    warmup: [200]
+    # warmup: [2000]
     beta1: [0.9]
     beta2: [0.95]
     eps: [1.0e-08]
@@ -39,7 +36,7 @@ parameters:
     z_loss_coefficient: [0.0001]
     lr_scheduler: ['cosine']
     wd: [0.033] # just smaller lr
-    lr: [0.006, 0.00424, 0.003]
+    lr: [0.00424]
       # - wd: [0.1] # same multiplication as before
       #   lr: [0.002]
       # - wd: [0.1] # just bigger wd

@@ -11,6 +11,8 @@
 #SBATCH --partition=booster
 #SBATCH --job-name=openlm
 #SBATCH --output=logs/%x_%j.out
+#SBATCH --mail-type=FAIL
+#SBATCH --mail-user=tomerporian@mail.tau.ac.il
 
 
 # load low-level libraries
@@ -44,7 +46,7 @@ export MASTER_ADDR=$master_addr"i"
 echo "MASTER_ADDR="$MASTER_ADDR
 
 
-OPEN_CLIP_HOME="/p/project/ccstdl/$USER/open_lm_fork"
+OPEN_CLIP_HOME="/p/project/ccstdl/$USER/averaging-iterates"
 export PYTHONPATH="$PYTHONPATH:${OPEN_CLIP_HOME}"
 
 cd ${OPEN_CLIP_HOME}

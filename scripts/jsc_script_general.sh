@@ -1,9 +1,9 @@
 #!/bin/bash -x
 
 #SBATCH --account=transfernetx
-#SBATCH --nodes=${1}
+#SBATCH --nodes=${SLURM_NODES}
 #SBATCH --exclude=jwb[0026,0098,0193,0631,0731,0729,0801,0807,0833,0964,1021]
-#SBATCH --gres=gpu:${2}
+#SBATCH --gres=gpu:${SLURM_GPUS}
 #SBATCH --ntasks-per-node=${2}
 #SBATCH --cpus-per-task=12
 # #SBATCH --wait-all-nodes=1
@@ -44,7 +44,7 @@ export MASTER_ADDR=$master_addr"i"
 echo "MASTER_ADDR="$MASTER_ADDR
 
 
-OPEN_CLIP_HOME="/p/project/ccstdl/$USER/open_lm_fork"
+OPEN_CLIP_HOME="/p/project/ccstdl/$USER/averaging-iterates"
 export PYTHONPATH="$PYTHONPATH:${OPEN_CLIP_HOME}"
 
 cd ${OPEN_CLIP_HOME}

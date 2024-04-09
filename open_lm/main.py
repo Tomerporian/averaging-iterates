@@ -147,9 +147,7 @@ def load_avg_models(args, averagers):
         if averagers is not None:
             for k in averagers.avgs_dict:
                 avg_sd = torch.load(args.resume.replace("epoch", k), map_location="cpu")
-                if next(iter(avg_sd.items()))[0].startswith("module"):
-                    avg_sd = {k[len("module.") :]: v for k, v in avg_sd.items()}
-                averagers.avgs_dict[k].load_state_dict_avg(avg_sd)
+                averagers.avgs_dict[k].load_state_dict_avg(avg_sd, args.distributed, args.fsdp)
                 logging.info(
                     f"=> resuming averager for {k} from checkpoint '{args.resume.replace('epoch', k)} (epoch {start_epoch})"
                 )
@@ -251,7 +249,7 @@ def save_checkpoint(
 
         if averagers is not None:
             for k in averagers.avgs_dict:
-                prefixes[f"{k}_"] = averagers.avgs_dict[k].state_dict_avg()
+                prefixes[f"{k}_"] = averagers.avgs_dict[k].get_state_dict_avg(args.fsdp)
         if (
             completed_epoch == args.epochs
             or is_final_checkpoint
@@ -276,7 +274,7 @@ def save_checkpoint(
                     keeping_flag = True
             for prefix in prefixes:
                 prev = os.path.join(args.checkpoint_path, f"{prefix}{completed_epoch - 1}.pt")
-                if os.path.exists(prev) and not keeping_flag:
+                if os.path.exists(prev) and (not keeping_flag or prefix == "optimizer_"):
                     os.remove(prev)
 
 
@@ -285,6 +283,79 @@ def cleanup(sync_process, distributed=False):
         terminate_sync_process(sync_process)
     if distributed and torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
+def check_fsdp_presence(model):
+    fsdp_present = False
+    for module in model.modules():
+        if isinstance(module, FSDP):
+            fsdp_present = True
+            break
+    return fsdp_present
+def fsdp_wrap_model(args, model, device):
+    transformer_layer_cls = None
+    if args.hf_model is not None:
+        # retrive the user specified block class for fsdp
+        for _, target_cls in model.named_modules():
+            if args.hf_fsdp_block in type(target_cls).__name__:
+                transformer_layer_cls = {type(target_cls)}
+                break
+
+        if transformer_layer_cls is None:
+            print(f"--hf-fsdp-block {args.hf_fsdp_block} not found in --hf-model {args.hf_model}")
+            return -1
+
+    else:
+        transformer_layer_cls = {Block}
+    # from https://pytorch.org/blog/efficient-large-scale-training-with-pytorch/
+    transformer_auto_wrapper_policy = functools.partial(
+        transformer_auto_wrap_policy,
+        transformer_layer_cls=transformer_layer_cls,
+    )
+    # tries to follow gopher...
+    mp_policy = None
+    if args.fsdp_amp:
+        print("=> using bfloat16 params as part of fsdp amp policy.")
+        mp_policy = MixedPrecision(
+            param_dtype=torch.bfloat16,
+            reduce_dtype=torch.float32,
+            buffer_dtype=torch.bfloat16,
+        )
+    elif args.fsdp_pure_bf16:
+        print("=> using pure bfloat16 params as part of fsdp amp policy.")
+        mp_policy = MixedPrecision(
+            param_dtype=torch.bfloat16,
+            reduce_dtype=torch.bfloat16,
+            buffer_dtype=torch.bfloat16,
+        )
+
+    if args.rank == 0:
+        print(f"Before FSDP parameter num: {sum(p.numel() for p in model.parameters()):,}")
+        print(f"Before FSDP {torch.cuda.memory_allocated()/1024**3:.3} GB")
+
+    fsdp_kwargs = {}
+    assert not (
+        args.fsdp_hybrid and args.fsdp_hybrid_o2
+    ), "Only --fsdp-hybrid or --fsdp-hybrid-o2 should be set."
+    if args.fsdp_backward_prefetch:
+        fsdp_kwargs["backward_prefetch"] = BackwardPrefetch.BACKWARD_PRE
+    if args.fsdp_hybrid:
+        fsdp_kwargs["sharding_strategy"] = ShardingStrategy.HYBRID_SHARD
+    if args.fsdp_hybrid_o2:
+        fsdp_kwargs["sharding_strategy"] = ShardingStrategy._HYBRID_SHARD_ZERO2
+    print("=> FSDP kwargs: ", fsdp_kwargs)
+
+    # Initialize FSDP. Use the same seed across workers to ensure reset_parameters is the same across workers.
+    random_seed(args.seed, rank=0)
+    return FSDP(
+        model,
+        auto_wrap_policy=transformer_auto_wrapper_policy,
+        device_id=device,
+        mixed_precision=mp_policy,
+        cpu_offload=CPUOffload(offload_params=args.fsdp_cpu_offload),
+        use_orig_params=args.fsdp_use_orig_params,
+        limit_all_gathers=args.fsdp_limit_all_gathers,
+        **fsdp_kwargs,
+    )
+
 
 
 def main(args):
@@ -455,7 +526,6 @@ def main(args):
         # Optional: Use meta device
         with torch.device("meta" if args.experimental_meta_device and args.fsdp else args.device):
             model = create_model(args)
-
     args.vocab_size = model.vocab_size
     args.seq_len = model.seq_len
     if args.train_num_samples is not None:
@@ -467,7 +537,7 @@ def main(args):
             )
         args.val_num_samples //= args.seq_len
 
-    averagers = None
+    
     random_seed(args.seed, args.rank)
 
     if args.grad_checkpointing:
@@ -475,89 +545,33 @@ def main(args):
 
     if args.distributed:
         if args.fsdp:
-            transformer_layer_cls = None
-
-            if args.hf_model is not None:
-                # retrive the user specified block class for fsdp
-                for _, target_cls in model.named_modules():
-                    if args.hf_fsdp_block in type(target_cls).__name__:
-                        transformer_layer_cls = {type(target_cls)}
-                        break
-
-                if transformer_layer_cls is None:
-                    print(f"--hf-fsdp-block {args.hf_fsdp_block} not found in --hf-model {args.hf_model}")
-                    return -1
-
-            else:
-                transformer_layer_cls = {Block}
-            # from https://pytorch.org/blog/efficient-large-scale-training-with-pytorch/
-            transformer_auto_wrapper_policy = functools.partial(
-                transformer_auto_wrap_policy,
-                transformer_layer_cls=transformer_layer_cls,
-            )
-            # tries to follow gopher...
-            mp_policy = None
-            if args.fsdp_amp:
-                print("=> using bfloat16 params as part of fsdp amp policy.")
-                mp_policy = MixedPrecision(
-                    param_dtype=torch.bfloat16,
-                    reduce_dtype=torch.float32,
-                    buffer_dtype=torch.bfloat16,
-                )
-            elif args.fsdp_pure_bf16:
-                print("=> using pure bfloat16 params as part of fsdp amp policy.")
-                mp_policy = MixedPrecision(
-                    param_dtype=torch.bfloat16,
-                    reduce_dtype=torch.bfloat16,
-                    buffer_dtype=torch.bfloat16,
-                )
-
-            if args.rank == 0:
-                print(f"Before FSDP parameter num: {sum(p.numel() for p in model.parameters()):,}")
-                print(f"Before FSDP {torch.cuda.memory_allocated()/1024**3:.3} GB")
-
-            fsdp_kwargs = {}
-            assert not (
-                args.fsdp_hybrid and args.fsdp_hybrid_o2
-            ), "Only --fsdp-hybrid or --fsdp-hybrid-o2 should be set."
-            if args.fsdp_backward_prefetch:
-                fsdp_kwargs["backward_prefetch"] = BackwardPrefetch.BACKWARD_PRE
-            if args.fsdp_hybrid:
-                fsdp_kwargs["sharding_strategy"] = ShardingStrategy.HYBRID_SHARD
-            if args.fsdp_hybrid_o2:
-                fsdp_kwargs["sharding_strategy"] = ShardingStrategy._HYBRID_SHARD_ZERO2
-            print("=> FSDP kwargs: ", fsdp_kwargs)
-
-            # Initialize FSDP. Use the same seed across workers to ensure reset_parameters is the same across workers.
-            random_seed(args.seed, rank=0)
-            model = FSDP(
-                model,
-                auto_wrap_policy=transformer_auto_wrapper_policy,
-                device_id=device,
-                mixed_precision=mp_policy,
-                cpu_offload=CPUOffload(offload_params=args.fsdp_cpu_offload),
-                use_orig_params=args.fsdp_use_orig_params,
-                limit_all_gathers=args.fsdp_limit_all_gathers,
-                **fsdp_kwargs,
-            )
-
-            print(f"After FSDP parameter num: {sum(p.numel() for p in model.parameters()):,} on rank {args.rank}")
-            print(f"After FSDP {torch.cuda.memory_allocated()/1024**3:.3} GB on rank {args.rank}")
+            # since it's impossible to deepcopy fsdp wrapped model, we create the averagers before wrapping the model
+            averagers = ModelAverager(model, args.averagers) if args.averagers is not None else None
+            model = fsdp_wrap_model(args, model, device)
+            # assert check_fsdp_presence(model)
+            if averagers is not None: # wrap averagers same as model
+                for k in averagers.avgs_dict.keys():
+                    averagers.avgs_dict[k].av_model = fsdp_wrap_model(args, averagers.avgs_dict[k].av_model, device)
+                    # assert check_fsdp_presence(averagers.avgs_dict[k].av_model)
+                    
         else:
             ddp_args = {}
             if args.ddp_static_graph:
                 # this doesn't exist in older PyTorch, arg only added if enabled
                 ddp_args["static_graph"] = True
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
-    if args.averagers is not None:
-        averagers = ModelAverager(model, args.averagers)
-    if args.resume is not None and averagers is not None:
-        load_avg_models(args, averagers)
+
+    if not args.fsdp:
+        averagers = ModelAverager(model, args.averagers) if args.averagers is not None else None
+        # we can deep copy the model now, and since it's already wrapped, the averagers will be copied wrapped as well
 
     if is_master(args):
-        logging.info(f"Model (has {sum(p.numel() for p in model.parameters() if p.requires_grad)} parameters):")
+        num_params = sum(p.numel() for p in model.parameters())
+        logging.info(f"Model (has {num_params} parameters):")
         logging.info(f"{str(model)}")
         logging.info("Params:")
+        if averagers is not None:
+            logging.info(f"  Averagers: {args.averagers}, adding {num_params*(len(args.averagers.split(',')))} parameters.")
         params_file = os.path.join(args.logs, args.name, "params.txt")
         with open(params_file, "w") as f:
             for name in sorted(vars(args)):
@@ -570,6 +584,8 @@ def main(args):
     shard_shuffle_seed = args.seed
     if args.resume is not None:
         start_epoch, global_step, shard_shuffle_seed = load_model(args, model)
+        if averagers is not None:
+            load_avg_models(args, averagers)
 
     elif args.pretrained is not None:
         print("=> loading from a pre-trained model.")
@@ -705,7 +721,7 @@ def main(args):
     if args.save_logs and args.tensorboard:
         assert tensorboard is not None, "Please install tensorboard."
         writer = tensorboard.SummaryWriter(args.tensorboard_path)
-    if args.save_logs and args.csv_log:
+    if args.save_logs and args.csv_log and is_master(args):
         csv_path = os.path.join(args.logs, args.name, "summary.csv")
     if args.wandb and is_master(args):
         assert wandb is not None, "Please install wandb."

@@ -1,12 +1,12 @@
 job_details:
-  name: long_runs_const_2_nodes_warmup_vals
+  name: long_runs_const_2_nodes_midpoints
   output_dir: exps
   num_gpus: 4
   num_nodes: 2
 parameters:
-    model: ['layers=10_hidden-dim=384', 'layers=14_hidden-dim=576']
+    model: ['layers=12_hidden-dim=480', 'layers=15_hidden-dim=640']
     train_num_samples: [426766791] # ~426M
-    warmup: [100, 200, 500]
+    warmup: [200, 2000]
     dataset_resampled: [false]
     precision: ['amp_bfloat16']
     batch_size: [16]
@@ -33,4 +33,4 @@ parameters:
     keep_powers_of_two: [5]
     workers: [2]
     accum_freq: [2]
-    averagers: ['poly_32_1,poly_32_100,poly_64_1']
+    averagers: ['poly_32_1,poly_32_100']

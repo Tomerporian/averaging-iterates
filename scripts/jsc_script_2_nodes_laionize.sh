@@ -1,18 +1,19 @@
 #!/bin/bash -x
 
-#SBATCH --account=transfernetx
-#SBATCH --nodes=4
-#SBATCH --exclude=jwb[0026,0098,0193,0631,0731,0729,0801,0807,0833,0964,1021]
+#SBATCH --account=laionize
+#SBATCH --nodes=2
+#SBATCH --exclude=jwb[0026,0098,0193,0631,0731,0729,0801,0807,0833,0964,1021,0470,0471,1153,1181,1193,1184,1099,1090,1158,1120,1174,1155,0542,0540,0860,0858,1177,0571,0857,0854,0469,0460]
 #SBATCH --gres=gpu:4
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=12
 # #SBATCH --wait-all-nodes=1
-#SBATCH --time=06:00:00
+#SBATCH --time=6:00:00
 #SBATCH --partition=booster
 #SBATCH --job-name=openlm
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-user=tomerporian@mail.tau.ac.il
+
 
 
 # load low-level libraries

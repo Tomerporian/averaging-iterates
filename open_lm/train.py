@@ -140,7 +140,7 @@ def train_one_epoch(
                 with autocast():
                     for key, averager in averagers.avgs_dict.items():
                         with torch.no_grad():
-                            out_avg, _ = averager.av_model(inputs)
+                            out_avg, _, _ = averager.av_model(inputs)
                             # save the loss for the average model for logging
                             total_loss_avg[key] = loss(out_avg.reshape(-1, args.vocab_size), targets.reshape(-1))
         else:
@@ -187,10 +187,12 @@ def train_one_epoch(
                         ):
                             for key, averager in averagers.avgs_dict.items():
                                 with torch.no_grad():
-                                    out_avg, _ = averager.av_model(inputs_ii).item()
+                                    # out_avg, _ = averager.av_model(inputs_ii).item()
+                                    out_avg, _, _ = averager.av_model(inputs_ii)
                                     local_avg_losses[key] = (
                                         loss(out_avg.reshape(-1, args.vocab_size), targets.reshape(-1))
-                                        / args.accum_freq
+                                        * inputs_ii.shape[0]
+                                        / inputs.shape[0]
                                     )
                 if ii == 0:
                     total_lm_loss = local_lm_loss
@@ -334,8 +336,8 @@ def train_one_epoch(
                 # reset all average meters
                 losses_m.reset()
                 if averagers is not None:
-                    for k in averagers.avgs_dict():
-                        losses_avg_m.reset()
+                    for k in averagers.avgs_dict:
+                        losses_avg_m[k].reset()
 
                 if math.isnan(losses_m.val):
                     # case where loss goes to nan, we see this sometimes with bad nodes.
